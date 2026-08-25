@@ -1,0 +1,66 @@
+name: Nightly image (upstream default branch)
+
+# Builds TARGET runner-base from the DEFAULT BRANCH HEAD of the upstream
+# repository (diegosouzapw/OmniRoute) and publishes it to GHCR.
+#
+# Schedule: 05:50 UTC = 02:50 BRT — the image is ready on the registry
+# before the 04:00 BRT deploy window driven by the Dokploy host schedule.
+#
+# NOTE: intentionally single-platform (linux/amd64 — the deploy VPS arch)
+# and single Dockerfile target; the multiarch/bun/web variants are what
+# OOM upstream CI. Standard ubuntu-latest fits this build.
+
+on:
+  schedule:
+    - cron: "50 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: nightly-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream default branch HEAD
+        id: src
+        uses: actions/checkout@v7
+        with:
+          repository: diegosouzapw/OmniRoute
+          persist-credentials: false
+
+      - name: Record source revision
+        id: rev
+        run: echo "sha=$(git -C "$GITHUB_WORKSPACE" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push nightly image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runner-base
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/quantmind-br/omniroute:nightly
+            ghcr.io/quantmind-br/omniroute:r${{ steps.rev.outputs.sha }}
+          cache-from: type=gha,scope=nightly-amd64
+          cache-to: type=gha,scope=nightly-amd64,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/diegosouzapw/OmniRoute
