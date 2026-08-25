@@ -1,14 +1,13 @@
 name: Nightly image (upstream default branch)
 
 # Builds TARGET runner-base from the DEFAULT BRANCH HEAD of the upstream
-# repository (diegosouzapw/OmniRoute) and publishes it to GHCR.
+# repository (diegosouzapw/OmniRoute) and publishes a MULTI-ARCH manifest
+# list (amd64 + arm64) to GHCR.
 #
-# Schedule: 05:50 UTC = 02:50 BRT — the image is ready on the registry
-# before the 04:00 BRT deploy window driven by the Dokploy host schedule.
+# Schedule: 05:50 UTC = 02:50 BRT — ready before the 04:00 BRT deploys.
 #
-# NOTE: intentionally single-platform (linux/amd64 — the deploy VPS arch)
-# and single Dockerfile target; the multiarch/bun/web variants are what
-# OOM upstream CI. Standard ubuntu-latest fits this build.
+# Native runners per platform (no QEMU: Turbopack/Rust under emulation is
+# unusable). The bun/web variants that OOM upstream CI are NOT built here.
 
 on:
   schedule:
@@ -23,9 +22,20 @@ concurrency:
   group: nightly-image
   cancel-in-progress: false
 
+env:
+  IMAGE: ghcr.io/quantmind-br/omniroute
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout upstream default branch HEAD
         id: src
@@ -36,7 +46,7 @@ jobs:
 
       - name: Record source revision
         id: rev
-        run: echo "sha=$(git -C "$GITHUB_WORKSPACE" rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -48,19 +58,80 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push nightly image
+      - name: Build and push platform image by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           target: runner-base
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: |
-            ghcr.io/quantmind-br/omniroute:nightly
-            ghcr.io/quantmind-br/omniroute:r${{ steps.rev.outputs.sha }}
-          cache-from: type=gha,scope=nightly-amd64
-          cache-to: type=gha,scope=nightly-amd64,mode=max
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=nightly-${{ matrix.platform }}
+          cache-to: type=gha,scope=nightly-${{ matrix.platform }},mode=max
           labels: |
             org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
             org.opencontainers.image.source=https://github.com/diegosouzapw/OmniRoute
+
+      - name: Export digest and revision
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+          echo "${{ steps.rev.outputs.sha }}" > /tmp/digests-rev.txt
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.platform }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload revision
+        uses: actions/upload-artifact@v7
+        with:
+          name: rev-${{ matrix.platform }}
+          path: /tmp/digests-rev.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/artifacts
+
+      - name: Stage digests and revision
+        run: |
+          mkdir -p /tmp/digests
+          cp /tmp/artifacts/digests-*/* /tmp/digests/
+          REV=$(cat /tmp/artifacts/rev-linux/amd64/rev-* /tmp/artifacts/rev-linux/arm64/rev-* 2>/dev/null | head -1)
+          [ -n "$REV" ] || REV=$(ls /tmp/digests | head -1)
+          echo "REV=$REV" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Create multi-arch manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          ARGS=""
+          [ -n "$REV" ] && ARGS="-t $IMAGE:r$REV"
+          docker buildx imagetools create $ARGS \
+            -t $IMAGE:nightly \
+            $(printf "$IMAGE@sha256:%s " *)
+
+      - name: Inspect manifest
+        run: docker buildx imagetools inspect "$IMAGE:nightly"
