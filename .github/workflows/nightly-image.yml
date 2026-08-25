@@ -58,6 +58,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      # The Next.js/Turbopack production build peaks near the 16 GB hosted
+      # runner ceiling and OOMs (ResourceExhausted) on some trees — upstream CI
+      # hits the same wall. A 12 GB swapfile absorbs the spike deterministically.
+      - name: Add 12 GB swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/build-swap
+          sudo chmod 600 /mnt/build-swap
+          sudo mkswap /mnt/build-swap
+          sudo swapon /mnt/build-swap
+          free -h
+
       - name: Build and push platform image by digest
         id: build
         uses: docker/build-push-action@v7
