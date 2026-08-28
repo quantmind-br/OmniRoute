@@ -6,10 +6,13 @@ name: Nightly image (upstream default branch)
 #
 # Schedule: 05:50 UTC = 02:50 BRT — ready before the 04:00 BRT deploys.
 #
-# Native runners per platform (no QEMU: Turbopack/Rust under emulation is
+# Native runners per platform (no QEMU: Rust compile under emulation is
 # unusable). The bun/web variants that OOM upstream CI are NOT built here.
-# A 12 GB swapfile absorbs the Turbopack memory spike that OOMs hosted
-# runners on some trees (upstream CI hits the same wall).
+# Builds with WEBPACK (OMNIROUTE_USE_TURBOPACK=0 build-arg): Turbopack's native
+# Rust peak is NOT bounded by --max-old-space-size (#6409) and OOMs the hosted
+# runners ("cannot allocate memory") on some trees — upstream CI hits the same
+# wall. Webpack's peak (~3.9 GB) is bounded by OMNIROUTE_BUILD_MEMORY_MB, so we
+# raise it via build-arg for headroom. The 12 GB swapfile stays as a safety net.
 
 on:
   schedule:
@@ -79,6 +82,14 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: ${{ env.IMAGE }}
+          # Force webpack: the upstream Dockerfile defaults to Turbopack, whose
+          # native Rust memory is unbounded and OOMs these hosted runners
+          # ("cannot allocate memory"). Webpack's peak is bounded by
+          # OMNIROUTE_BUILD_MEMORY_MB, so raise it for headroom. Drop these
+          # build-args to go back to the upstream default bundler.
+          build-args: |
+            OMNIROUTE_USE_TURBOPACK=0
+            OMNIROUTE_BUILD_MEMORY_MB=6144
           cache-from: type=gha,scope=nightly-${{ matrix.arch }}
           cache-to: type=gha,scope=nightly-${{ matrix.arch }},mode=max
           labels: |
