@@ -60,6 +60,6 @@
 2. Validate: `npx prettier --check` the YAML and parse it with `yaml`.
 3. Push the branch and fast-forward `fork/ops/nightly-image` (direct push).
 4. Smoke-test: `gh workflow run nightly-image.yml --repo quantmind-br/OmniRoute
-   --ref ops/nightly-image`, then watch the run to completion
+--ref ops/nightly-image`, then watch the run to completion
    (`gh run view <id>` / `gh run watch`).
 5. Clean up temporary worktrees/branches; never touch other sessions' work.
