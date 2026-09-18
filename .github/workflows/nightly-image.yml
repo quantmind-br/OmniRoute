@@ -55,6 +55,16 @@ jobs:
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@v4
+
+      # GHCR/buildx occasionally answers the toolkit download with a 502 during
+      # setup ("received unexpected HTTP status: 502 Bad Gateway", 2026-09-10),
+      # which red-fails the whole nightly for a purely transient reason. One
+      # retry costs seconds and removes that failure class.
+      - name: Set up Docker Buildx (retry)
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
@@ -73,8 +83,30 @@ jobs:
           sudo swapon /mnt/build-swap
           free -h
 
-      - name: Build and push platform image by digest
-        id: build
+      # Two-pass build: webpack first, Turbopack as the fallback.
+      #
+      # Forcing webpack (OMNIROUTE_USE_TURBOPACK=0) bounds the build's peak RSS
+      # via OMNIROUTE_BUILD_MEMORY_MB, which is why it stays the primary pass —
+      # Turbopack's native Rust peak is NOT bounded by --max-old-space-size
+      # (#6409) and OOMs these hosted runners on some trees.
+      #
+      # But webpack is NOT the bundler upstream CI exercises, so a webpack-only
+      # breakage in the upstream tree red-fails this nightly even though the
+      # source is perfectly buildable. Observed Sept/2026: `Can't resolve
+      # 'child_process'` via sharp -> cursorImages.ts (12, 13, 14/09) and
+      # `Identifier 'ERROR_TYPE_CONTRACT' has already been declared` (15/09) —
+      # 4 of 7 failures in 18 days. When webpack fails for ANY reason, retry the
+      # same tree with the upstream default bundler before giving up.
+      #
+      # Heap raised 6144 -> 8192 MB: the arm64 pass OOMed on 16/09 ("Ineffective
+      # mark-compacts near heap limit"). Both runner classes have 16 GB and the
+      # 12 GB swapfile above absorbs the overshoot.
+      #
+      # Separate cache scopes per bundler: their module graphs are not
+      # interchangeable and sharing one scope poisons both.
+      - name: Build and push platform image by digest (webpack)
+        id: build_webpack
+        continue-on-error: true
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -82,19 +114,53 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           tags: ${{ env.IMAGE }}
-          # Force webpack: the upstream Dockerfile defaults to Turbopack, whose
-          # native Rust memory is unbounded and OOMs these hosted runners
-          # ("cannot allocate memory"). Webpack's peak is bounded by
-          # OMNIROUTE_BUILD_MEMORY_MB, so raise it for headroom. Drop these
-          # build-args to go back to the upstream default bundler.
           build-args: |
             OMNIROUTE_USE_TURBOPACK=0
-            OMNIROUTE_BUILD_MEMORY_MB=6144
+            OMNIROUTE_BUILD_MEMORY_MB=8192
           cache-from: type=gha,scope=nightly-${{ matrix.arch }}
           cache-to: type=gha,scope=nightly-${{ matrix.arch }},mode=max
           labels: |
             org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
             org.opencontainers.image.source=https://github.com/diegosouzapw/OmniRoute
+
+      - name: Build and push platform image by digest (Turbopack fallback)
+        id: build_turbopack
+        if: steps.build_webpack.outcome == 'failure'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runner-base
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          tags: ${{ env.IMAGE }}
+          # No OMNIROUTE_USE_TURBOPACK build-arg -> the Dockerfile default (=1).
+          build-args: |
+            OMNIROUTE_BUILD_MEMORY_MB=8192
+          cache-from: type=gha,scope=nightly-turbopack-${{ matrix.arch }}
+          cache-to: type=gha,scope=nightly-turbopack-${{ matrix.arch }},mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+            org.opencontainers.image.source=https://github.com/diegosouzapw/OmniRoute
+
+      # Whichever pass produced an image wins. A skipped step has an empty
+      # digest output, so the webpack digest short-circuits when it exists.
+      - name: Resolve winning digest
+        id: build
+        env:
+          WEBPACK_DIGEST: ${{ steps.build_webpack.outputs.digest }}
+          TURBOPACK_DIGEST: ${{ steps.build_turbopack.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ -n "$WEBPACK_DIGEST" ]; then
+            echo "digest=$WEBPACK_DIGEST" >> "$GITHUB_OUTPUT"
+            echo "✅ built with webpack: $WEBPACK_DIGEST"
+          elif [ -n "$TURBOPACK_DIGEST" ]; then
+            echo "digest=$TURBOPACK_DIGEST" >> "$GITHUB_OUTPUT"
+            echo "::warning title=webpack pass failed::The webpack build failed; the Turbopack fallback produced this image ($TURBOPACK_DIGEST). Check the webpack step log — the upstream tree likely has a webpack-only breakage."
+          else
+            echo "::error title=Both bundlers failed::Neither the webpack pass nor the Turbopack fallback produced an image."
+            exit 1
+          fi
 
       - name: Export digest and revision
         run: |
