@@ -50,6 +50,56 @@ jobs:
           repository: diegosouzapw/OmniRoute
           persist-credentials: false
 
+      # Fork-owned build fixes that cannot go upstream (this fork never opens
+      # upstream PRs). `patches/nightly/` lives on THIS branch, but the step
+      # above replaced the workspace with upstream source — so fetch just the
+      # patches directory into `.fork` (sparse checkout, same ref that carries
+      # this workflow file, so feature branches test their own patches).
+      - name: Checkout fork nightly patches
+        uses: actions/checkout@v7
+        with:
+          repository: quantmind-br/OmniRoute
+          ref: ${{ github.ref }}
+          sparse-checkout: patches/nightly
+          path: .fork
+          persist-credentials: false
+
+      # Apply `patches/nightly/*.patch` (strict `git apply`; a patch that no
+      # longer matches the upstream HEAD is skipped with a warning — the build
+      # itself then proves whether the fix is still needed), then run
+      # `patches/nightly/*.sh` fixups (idempotent, fatal on error). `.fork` is
+      # removed afterwards so it never leaks into the Docker build context.
+      # See patches/nightly/README.md for the convention.
+      - name: Apply fork nightly patches
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          if [ ! -d .fork/patches/nightly ]; then
+            echo "No fork patches directory; skipping."
+            exit 0
+          fi
+          count=0
+          for p in .fork/patches/nightly/*.patch; do
+            name="$(basename "$p")"
+            if git apply --check --whitespace=fix "$p"; then
+              git apply --whitespace=fix "$p"
+              echo "✅ applied fork patch: $name"
+              count=$((count + 1))
+            else
+              echo "::warning title=fork patch skipped::$name does not apply to this upstream HEAD; continuing without it."
+            fi
+          done
+          for s in .fork/patches/nightly/*.sh; do
+            name="$(basename "$s")"
+            echo "--- running fork fixup: $name ---"
+            bash "$s"
+            echo "✅ fixup done: $name"
+            count=$((count + 1))
+          done
+          rm -rf .fork
+          echo "Fork patches/fixups applied: $count"
+          git status --short | head -n 20 || true
+
       - name: Record source revision
         id: rev
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"

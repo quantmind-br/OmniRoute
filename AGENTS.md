@@ -10,9 +10,10 @@
 1. **No upstream PRs — ever.** Do not open, and immediately close any
    mistakenly-opened, pull request against `diegosouzapw/OmniRoute`. Upstream
    contributions are out of scope for this repo.
-2. **The main branch is `ops/nightly-image`.** It holds a single file,
-   `.github/workflows/nightly-image.yml`. Do not treat `main` or `release/*` as
-   the operative branch of this fork.
+2. **The main branch is `ops/nightly-image`.** It holds the nightly workflow
+   (`.github/workflows/nightly-image.yml`) plus fork-owned build fixes
+   (`patches/nightly/` — convention in its `README.md`). Do not treat `main`
+   or `release/*` as the operative branch of this fork.
 3. **Delivery is a direct push** to `fork/ops/nightly-image` (remote `fork` →
    `quantmind-br/OmniRoute`). No PRs, no merge queues, no upstream syncs.
 4. **Do not merge/sync upstream history** into fork branches unless the
@@ -56,7 +57,7 @@
 
 ## Workflow change checklist
 
-1. Edit `.github/workflows/nightly-image.yml` on a branch off `ops/nightly-image`.
+1. Edit `.github/workflows/nightly-image.yml` and/or `patches/nightly/` on a branch off `ops/nightly-image`.
 2. Validate: `npx prettier --check` the YAML and parse it with `yaml`.
 3. Push the branch and fast-forward `fork/ops/nightly-image` (direct push).
 4. Smoke-test: `gh workflow run nightly-image.yml --repo quantmind-br/OmniRoute

@@ -1,0 +1,19 @@
+# TEMPLATE — copy to `NN-short-name.patch` (drop the `.example` suffix) and
+# replace the diff below with the real one, generated from an upstream tree:
+#
+#   git diff > patches/nightly/NN-short-name.patch
+#
+# Rules (see README.md):
+# - Keep the patch small and single-purpose; name the upstream failure class
+#   (run id + date) in a header comment inside the patch if relevant.
+# - The workflow applies it with strict `git apply --check` first. A patch
+#   that no longer matches the upstream HEAD is SKIPPED with a warning, so a
+#   rotten patch never breaks the build — but refresh or delete it, otherwise
+#   its fix silently stops applying.
+# - `*.example` files are never applied.
+#
+# --- a/example.txt
+# +++ b/example.txt
+# @@ -1 +1 @@
+# -before
+# +after
