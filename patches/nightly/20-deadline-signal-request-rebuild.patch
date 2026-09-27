@@ -1,0 +1,51 @@
+# 20-deadline-signal-request-rebuild — client chat APIs answer 500 on every request.
+#
+# Failure class: nightly run 36313753532 (2026-09-27, upstream a58000c7685f, webpack
+# build, node:26-trixie-slim / Node 26.10). Upstream 8c05ec4212 (#14808, 2026-09-25)
+# wraps the inbound request of /v1/chat/completions, /v1/messages and /v1/responses in
+# `withDeadlineSignal`, which rebuilt it with `new Request(request, { signal, headers })`.
+# With the route's NextRequest as `input`, Node's native Request reads its private
+# `#state` and throws "Cannot read private member #state from an object whose class did
+# not declare it" before routing: HTTP 500, empty body, no call log. Upstream unit tests
+# build the input with the native Request, so they pass.
+#
+# Fix: rebuild from the url with method, headers, body stream, signal and
+# `duplex: "half"`. Verified on the published image (bundle patched in a local
+# container: the three routes reach provider routing) and with
+# tests/unit/early-stream-keepalive.test.ts (24/24) against the patched source.
+diff --git a/open-sse/utils/earlyStreamKeepalive.ts b/open-sse/utils/earlyStreamKeepalive.ts
+index d2d600ebf7..b64207cbfd 100644
+--- a/open-sse/utils/earlyStreamKeepalive.ts
++++ b/open-sse/utils/earlyStreamKeepalive.ts
+@@ -312,9 +312,12 @@ export function __getDeadlineTokenRegistrySizeForTests(): number {
+  *
+  * The wrapped request MUST be the one the route hands downstream (admission,
+  * body parse, `handleChat`): the handler snapshots `request.signal` after
+- * admission, so wrapping after that point would not propagate. Rebuilt via
+- * `new Request(request, { signal, headers })`, which preserves method, url and
+- * body byte-for-byte.
++ * admission, so wrapping after that point would not propagate. Rebuilt from
++ * the url with method, headers, body stream, signal and `duplex: "half"`, which
++ * preserves method, url and body byte-for-byte. The inbound request is never
++ * passed as the `input` of `new Request`: Node's native Request then reads its
++ * private `#state`, and the route's NextRequest does not carry the native one
++ * (webpack build on Node 26: "Cannot read private member #state").
+  *
+  * Controller recovery downstream (`getDeadlineController`) is two-layered:
+  * the combined signal object (fast path — same object when nothing rebuilds),
+@@ -338,7 +341,14 @@ export function withDeadlineSignal(request: Request): {
+   // admission rebuilds, which both copy headers but mint new signal objects.
+   const token = `dl-${Date.now().toString(36)}-${(deadlineTokenSeq += 1)}`;
+   headers.set(DEADLINE_TOKEN_HEADER, token);
+-  const wrappedReq = new Request(request, { signal: combined, headers });
++  const hasBody = request.method !== "GET" && request.method !== "HEAD";
++  const wrappedReq = new Request(request.url, {
++    method: request.method,
++    headers,
++    body: hasBody ? request.body : null,
++    signal: combined,
++    duplex: "half",
++  } as RequestInit & { duplex: "half" });
+   deadlineControllers.set(combined, deadlineController);
+   deadlineControllersByToken.set(token, new WeakRef(deadlineController));
+   deadlineTokenByController.set(deadlineController, token);

@@ -46,3 +46,8 @@ bash -n patches/nightly/NN-name.sh
 - `502 Bad Gateway` from the buildx toolkit download (10/09): covered by the
   buildx retry step in the workflow.
 - arm64 heap OOM (16/09): covered by `OMNIROUTE_BUILD_MEMORY_MB=8192` + swap.
+- `Cannot read private member #state` on every `/v1/chat/completions`,
+  `/v1/messages` and `/v1/responses` request (27/09, run 36313753532, upstream
+  `a58000c7685f`): `withDeadlineSignal` rebuilt the route's NextRequest with
+  `new Request(request, …)` on Node 26. Covered by
+  `20-deadline-signal-request-rebuild.patch`.
